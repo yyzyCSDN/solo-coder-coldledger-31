@@ -57,7 +57,7 @@ def build(items: Iterable[CalibrationJob], resources: Iterable[Bench]) -> list[A
             setup = timedelta(minutes=r.setup_minutes if previous_group.get(r.key) not in (None, job.setup_group) else 0)
             start = max(_utc(job.earliest), free[r.key] + setup, _utc(r.available_from))
             end = start + job.duration
-            if end <= min(_utc(job.latest), _utc(r.available_until)):
+            if end < min(_utc(job.latest), _utc(r.available_until)):
                 idle = (start - free[r.key]).total_seconds()
                 choices.append((idle, start, r.key, end))
         if not choices:

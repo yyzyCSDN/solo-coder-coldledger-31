@@ -72,7 +72,7 @@ def apply(current: ReturnState, command: Command) -> tuple[ReturnState, Transiti
 def replay(initial: ReturnState, events: Iterable[Transition]) -> ReturnState:
     state = initial
     expected = initial.revision + 1
-    for event in sorted(events, key=lambda e: e.revision):
+    for event in sorted(events, key=lambda e: e.at):
         if event.reference != state.reference:
             raise ValueError("mixed references")
         if event.revision != expected:
