@@ -3,7 +3,31 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Iterable
 
-STATES = ['requested', 'authorized', 'received', 'assessed', 'reintegrated', 'closed']
+STATES = ['requested', 'authorized', 'received', 'assessed', 'quarantined',
+          'reintegrated', 'closed']
+
+# Attribute keys anchoring the assessment record to the state timeline.
+ASSESSMENT_VERDICT = 'assessment.verdict'
+ASSESSMENT_FINGERPRINT = 'assessment.fingerprint'
+ASSESSMENT_REASONS = 'assessment.reasons'
+ASSESSMENT_GAP_SECONDS = 'assessment.gap_seconds'
+QUARANTINE_REASON = 'quarantine.reason'
+
+# Explicit transition map. reintegrated may only be reached from a
+# completed assessment (assessed), never directly from receipt: that was
+# the path that let stock move before the custody/coverage record existed.
+# quarantined stock either gets supplemental evidence and is re-assessed
+# (quarantined -> assessed), or is destroyed/closed.
+ALLOWED = {
+    'requested': frozenset({'authorized'}),
+    'authorized': frozenset({'received', 'closed'}),
+    'received': frozenset({'assessed', 'quarantined'}),
+    'assessed': frozenset({'reintegrated', 'quarantined', 'closed'}),
+    'quarantined': frozenset({'assessed', 'closed'}),
+    'reintegrated': frozenset({'closed'}),
+    'closed': frozenset(),
+}
+
 
 @dataclass(frozen=True)
 class ReturnState:
@@ -39,12 +63,9 @@ class Transition:
     at: datetime
     reason: str
 
-ALLOWED = {
-    STATES[i]: frozenset(STATES[i + 1:i + 3])
-    for i in range(len(STATES))
-}
-if STATES:
-    ALLOWED[STATES[-1]] = frozenset()
+
+def _attrs(state: ReturnState) -> dict[str, str]:
+    return dict(state.attributes)
 
 
 def apply(current: ReturnState, command: Command) -> tuple[ReturnState, Transition]:
@@ -60,6 +81,18 @@ def apply(current: ReturnState, command: Command) -> tuple[ReturnState, Transiti
     allowed = ALLOWED.get(current.state, frozenset())
     if command.target not in allowed:
         raise ValueError(f"transition {current.state} -> {command.target} not allowed")
+
+    # Gate the inventory-impacting transitions on a recorded verdict so the
+    # ledger can never be updated ahead of the assessment record.
+    data = _attrs(current)
+    if command.target == 'reintegrated':
+        if data.get(ASSESSMENT_VERDICT) != 'release':
+            raise ValueError("reintegration requires a recorded release verdict")
+        if not data.get(ASSESSMENT_FINGERPRINT):
+            raise ValueError("release verdict missing evidence fingerprint")
+    if command.target == 'quarantined' and not data.get(QUARANTINE_REASON):
+        raise ValueError("quarantine requires a recorded reason")
+
     at = command.at.astimezone(timezone.utc)
     previous_at = current.updated_at.astimezone(timezone.utc) if current.updated_at else None
     if previous_at is not None and at < previous_at:
